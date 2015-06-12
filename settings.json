@@ -1,0 +1,9 @@
+{
+    "enabled": false,
+    "settings": {
+        "firstId": 100300,
+        "interval": 60000,
+        "deviceName": "Syr-Lex10",
+        "debug": false
+    }
+}
