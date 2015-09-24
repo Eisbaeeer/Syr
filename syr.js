@@ -1,5 +1,5 @@
 /**
- *      CCU.IO Syr Connect Adapter 0.7.0
+ *      CCU.IO Syr Connect Adapter 0.7.1
  *      
  *      You need a router who can reroute a DNS request from Syr to a local IP-
  *      address. Tested and possible with fritzbox or own DNS Server.
@@ -15,7 +15,15 @@
  *                  Adding water consumtion statistics  0.6.0  
  *      2015 06 12  Eisbaeeer
  *                  Fine tuning - summary water consumption statistics 0.7.0
- */
+ *      2015 06 14  Eisbaeeer
+ *                  Calculate normal counts of regenerations (was wrong)
+ *      2015 06 16  Eisbaeeer
+ *                  Calculate daily consumtions
+ *      2015 07 12  Eisbaeer
+ *                  Bugfix error after regeneration
+ *
+ *                  */
+ 
 
 var settings = require(__dirname+'/../../settings.js');
 
@@ -36,8 +44,7 @@ var logger = require(__dirname+'/../../logger.js'),
 var objects = {},
     result = {},
 	  datapoints = {};
-	
-
+    
 if (settings.ioListenPort) {
 	var socket = io.connect("127.0.0.1", {
 		port: settings.ioListenPort
@@ -95,6 +102,9 @@ var rows = {};
 var Syr_REST_CAPACITY_BEFORE = {};
 var Syr_WATER_CONSUMPTION_SUMMARY = {};
 var Syr_LITER_DELTA = {};
+var Syr_LITER_DAILY = {};
+var Syr_LITER_DAILY_SUM = {};
+var Syr_tageswechsel = false;
 
 // XML Datei einlesen
 function getValues() {
@@ -148,11 +158,12 @@ function getValues() {
    var Syr_DAILY_WATER_CONSUMPTION = array[27].substring(8);
    socket.emit("setState", [syrSettings.firstId+11, Syr_DAILY_WATER_CONSUMPTION]);
    
-   var Syr_COUNT_OF_NORMAL_REGENERATION = array[29].substring(8);
-   socket.emit("setState", [syrSettings.firstId+12, Syr_COUNT_OF_NORMAL_REGENERATION]);
-   
    var Syr_COUNT_OF_SERVICE_REGENERATION = array[30].substring(8);
    socket.emit("setState", [syrSettings.firstId+13, Syr_COUNT_OF_SERVICE_REGENERATION]);
+   
+   var Syr_COUNT_OF_NORMAL_REGENERATION = array[29].substring(8);
+       Syr_COUNT_OF_NORMAL_REGENERATION = parseInt(Syr_COUNT_OF_NORMAL_REGENERATION) - parseInt(Syr_COUNT_OF_SERVICE_REGENERATION);
+   socket.emit("setState", [syrSettings.firstId+12, Syr_COUNT_OF_NORMAL_REGENERATION]);
    
    var Syr_IN_WATER_HARDNESS = array[34].substring(8);
    socket.emit("setState", [syrSettings.firstId+14, Syr_IN_WATER_HARDNESS]);
@@ -181,14 +192,72 @@ function getValues() {
        }
     });  
 
+              // Reading Datapoints
+        getState (syrSettings.firstId+23, function (id, obj) {
+        if (!obj){                           
+           Syr_LITER_DAILY = 0;
+       }
+        else {
+            // take actual value
+            Syr_LITER_DAILY = obj[0];
+       }
+      }); 
+      
+   // Tagesverbrauch und Tageswechsel verarbeiten
+           
+           var date=new Date();
+           var stunde=date.getHours();
+           var minute=date.getMinutes();
+           var sekunde=date.getSeconds();	
+
+           
+           if (stunde == 23 && minute == 59) {
+              Syr_tageswechsel = true;
+              socket.emit("setState", [syrSettings.firstId+24, Syr_LITER_DAILY]); 
+                   if (syrSettings.debug == true) {
+                    logger.info("adapter SYR debug Syr_tageswechsel: "+Syr_tageswechsel);
+                  }
+           }
+          
+           if (Syr_tageswechsel == true && stunde == 0 && minute == 0) {
+           Syr_tageswechsel = false;
+           Syr_LITER_DAILY = 0;
+           socket.emit("setState", [syrSettings.firstId+23, Syr_LITER_DAILY]);
+                   if (syrSettings.debug == true) {
+                    logger.info("adapter SYR debug Syr_tageswechsel: "+Syr_tageswechsel);
+                    logger.info("adapter SYR debug Syr_LITER_DAILY: "+Syr_LITER_DAILY);
+                  }
+           }
+           
+            if (Syr_tageswechsel == false && Syr_LITER_DELTA >0) {
+              Syr_LITER_DAILY = parseInt(Syr_LITER_DAILY);
+              Syr_LITER_DELTA = parseInt(Syr_LITER_DELTA);
+              Syr_LITER_DAILY = Syr_LITER_DAILY + Syr_LITER_DELTA;
+              socket.emit("setState", [syrSettings.firstId+23, Syr_LITER_DAILY]);
+              Syr_LITER_DELTA = 0;
+              socket.emit("setState", [syrSettings.firstId+22, Syr_LITER_DELTA]);
+                  if (syrSettings.debug == true) {
+                    logger.info("adapter SYR debug Syr_tageswechsel: "+Syr_tageswechsel);
+                    logger.info("adapter SYR debug Syr_LITER_DELTA: "+Syr_LITER_DELTA);
+                    logger.info("adapter SYR debug Syr_LITER_DAILY: "+Syr_LITER_DAILY);
+                  }                      
+              }
 
    
-   //Wasserverbrauch ermitteln
+   //Wasserverbrauch ermitteln - wird nur aufgerufen, wenn wasser gezapft wurde
    
       Syr_REST_CAPACITY_BEFORE = parseInt(Syr_REST_CAPACITY_BEFORE);
       Syr_REST_CAPACITY_LITER = parseInt(Syr_REST_CAPACITY_LITER);
    
    if (Syr_REST_CAPACITY_BEFORE != Syr_REST_CAPACITY_LITER) {
+      
+      if (Syr_REST_CAPACITY_BEFORE < Syr_REST_CAPACITY_LITER) {
+            Syr_REST_CAPACITY_BEFORE = Syr_REST_CAPACITY_LITER;
+            socket.emit("setState", [syrSettings.firstId+20, Syr_REST_CAPACITY_BEFORE]);
+            }
+     else
+             {
+      if (Syr_REST_CAPACITY_BEFORE > Syr_REST_CAPACITY_LITER) {
         Syr_LITER_DELTA = parseInt(Syr_REST_CAPACITY_BEFORE) - parseInt(Syr_REST_CAPACITY_LITER);
         socket.emit("setState", [syrSettings.firstId+22, Syr_LITER_DELTA]);
        
@@ -197,11 +266,23 @@ function getValues() {
                      
             Syr_LITER_DELTA = parseInt(Syr_LITER_DELTA);
           if (Syr_LITER_DELTA > 0) {
-                   Syr_WATER_CONSUMPTION_SUMMARY = Syr_WATER_CONSUMPTION_SUMMARY + parseInt(Syr_LITER_DELTA);
+                   Syr_WATER_CONSUMPTION_SUMMARY = parseInt(Syr_WATER_CONSUMPTION_SUMMARY) + parseInt(Syr_LITER_DELTA);
                    socket.emit("setState", [syrSettings.firstId+19, Syr_WATER_CONSUMPTION_SUMMARY]);     
           }
+       }
+           
+            
+           
      }
+     // Hier werden Tagesverbräuche berechnet
+
+           if (syrSettings.debug == true) {
+                logger.info("adapter SYR Timestamp: "+stunde+":"+minute+":"+sekunde);
+          }     
+         
+  }
 }
+
 
 
 //Datenpunkte anlegen
@@ -240,7 +321,9 @@ function SyrInit() {
     WATER_CONSUMPTION_SUMMARY:      syrSettings.firstId+19,
     REST_CAPACITY_BEFORE:           syrSettings.firstId+20,
     WATER_CONSUMPTION_DAY:          syrSettings.firstId+21,
-    Syr_LITER_DELTA:                syrSettings.firstId+22     
+    Syr_LITER_DELTA:                syrSettings.firstId+22,
+    Syr_LITER_DAILY:                syrSettings.firstId+23,
+    Syr_LITER_DAILY_SUM:            syrSettings.firstId+24
   };
   
   
@@ -344,6 +427,16 @@ function SyrInit() {
 	  TypeName: "VARDP"
 	});
   
+  setObject(syrSettings.firstId+23, {
+	  Name: "Syr_LITER_DAILY",
+	  TypeName: "VARDP"
+	});
+
+  setObject(syrSettings.firstId+24, {
+	  Name: "Syr_LITER_DAILY_SUM",
+	  TypeName: "VARDP"
+	});
+
   
   logger.info("adapter syr objects inserted, starting at: "+syrSettings.firstId);
 
@@ -368,7 +461,7 @@ logger.info("adapter Syr start");
        }     
        });      
               // Reading Datapoints
-        getState (syrSettings.firstId+20, function (id, obj) {
+    getState (syrSettings.firstId+20, function (id, obj) {
         if (!obj){                           
            Syr_REST_CAPACITY_BEFORE = 0;
        }
@@ -378,7 +471,7 @@ logger.info("adapter Syr start");
        }
       }); 
               // Reading Datapoints
-        getState (syrSettings.firstId+22, function (id, obj) {
+    getState (syrSettings.firstId+22, function (id, obj) {
         if (!obj){                           
            Syr_LITER_DELTA = 0;
        }
@@ -387,9 +480,18 @@ logger.info("adapter Syr start");
             Syr_LITER_DELTA = obj[0];
        }
       }); 
+              // Reading Datapoints
+    getState (syrSettings.firstId+23, function (id, obj) {
+        if (!obj){                           
+           Syr_LITER_DAILY = 0;
+       }
+        else {
+            // take actual value
+            Syr_LITER_DAILY = obj[0];
+       }
+      }); 
 
 
-      
       if (syrSettings.debug == true) {
       logger.info("adapter SYR Syr_LITER_DELTA: -init- "+Syr_LITER_DELTA);
       }     
@@ -399,6 +501,7 @@ logger.info("adapter Syr start");
        if (syrSettings.debug == true) {
       logger.info("adapter SYR Syr_WATER_CONSUMPTION_SUMMARY: -init- "+Syr_WATER_CONSUMPTION_SUMMARY);
       } 
+      
                            
 getValues();
                     
